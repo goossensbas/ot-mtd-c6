@@ -29,6 +29,20 @@
 #include "nvs_flash.h"
 #include "openthread/logging.h"
 #include "openthread/thread.h"
+#include "openthread/coap.h"
+
+#include "driver/i2c.h"
+#include "driver/gpio.h"
+#include "bme280.h"
+// I2C configuration  found in bme280.h
+
+#define I2C_TAG "I2C"
+#define BME280_TAG "BME280"
+#define COAP_TAG "CoAP"
+#define COAP_URI_PATH "test"
+#define COAP_SERVER "fd3f:4f29:5339:1ff9:ffc:7570:df42:e75f"
+#define OT_COAP_PORT 5683
+
 #if CONFIG_ESP_SLEEP_DEBUG
 #include "esp_timer.h"
 #include "esp_sleep.h"
@@ -131,6 +145,124 @@ static void print_sleep_flag(void *arg)
 }
 #endif
 
+void i2c_scanner() {
+    uint8_t addr;
+    ESP_LOGI(I2C_TAG, "Scanning I2C bus...");
+
+    for (addr = 1; addr < 127; addr++) {
+      uint8_t data; // Dummy data
+        // Check if the device is present
+        esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, addr, &data, 1, 1000 / portTICK_PERIOD_MS);
+        vTaskDelay(10 / portTICK_PERIOD_MS); // Optional delay
+        if (err == ESP_OK) {
+            ESP_LOGI(I2C_TAG, "Found device at address 0x%02x", addr);
+        }
+    }
+    ESP_LOGI(I2C_TAG, "Scanning complete.");
+}
+
+
+// Function to initialize the I2C bus
+static esp_err_t i2c_master_init(void) {
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_MASTER_SDA_IO,   // SDA GPIO
+        .scl_io_num = I2C_MASTER_SCL_IO,   // SCL GPIO
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ, // I2C clock frequency
+    };
+    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(I2C_TAG, "I2C param config failed");
+        return err;
+    }
+    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+}
+
+//CoAP response function
+void handle_coap_response(void *context, otMessage *message, const otMessageInfo *messageInfo, otError result) {
+    if (result == OT_ERROR_NONE) {
+        ESP_LOGI(COAP_TAG, "CoAP response received");
+    } else {
+        ESP_LOGE(COAP_TAG, "Failed to receive CoAP response: %d", result);
+    }
+}
+
+//send CoAP message
+void send_coap_message(void) {
+
+    uint8_t data[8];
+    int32_t t_fine;
+    
+    // Initialize the sensor and read calibration data
+    bme280_read_calibration_data();
+
+    bme280_read(0xF7, data, 8);  // Read pressure (3 bytes), temperature (3 bytes), humidity (2 bytes)
+
+    int32_t adc_P = (int32_t)((data[0] << 12) | (data[1] << 4) | (data[2] >> 4));
+    int32_t adc_T = (int32_t)((data[3] << 12) | (data[4] << 4) | (data[5] >> 4));
+    int32_t adc_H = (int32_t)((data[6] << 8) | data[7]);
+
+    int32_t temperature = bme280_compensate_T(adc_T, &t_fine);
+    uint32_t pressure = bme280_compensate_P(adc_P, t_fine);
+    uint32_t humidity = bme280_compensate_H(adc_H);
+    
+    // Log the results
+    ESP_LOGI(BME280_TAG, "Temperature: %.2f�C", (float)temperature / 100.0);
+    ESP_LOGI(BME280_TAG, "Pressure: %.2f hPa", (float)pressure / 100.0);
+    ESP_LOGI(BME280_TAG, "Humidity: %.2f%%", (float)humidity / 1024.0);
+
+    otError error;
+    otMessage *message;
+    otMessageInfo messageInfo;
+    otMessageSettings messageSettings = { true, OT_COAP_PORT };
+    
+    otInstance *instance = esp_openthread_get_instance();
+    if (instance == NULL) {
+        ESP_LOGE(COAP_TAG, "OpenThread instance is NULL. Cannot send CoAP message.");
+        return;
+    }
+
+    // Create a new CoAP message
+    message = otCoapNewMessage(instance, NULL);
+    if (message == NULL) {
+        ESP_LOGE(COAP_TAG, "Failed to allocate CoAP message");
+        return;
+    }
+
+    // Set CoAP message type and code (POST request)
+    otCoapMessageInit(message, OT_COAP_TYPE_CONFIRMABLE, OT_COAP_CODE_PUT);
+    otCoapMessageAppendUriPathOptions(message, COAP_URI_PATH);
+    
+    //set the message type to JSON
+    otCoapMessageAppendContentFormatOption(message, OT_COAP_OPTION_CONTENT_FORMAT_JSON);
+    // Build JSON payload with sensor data
+    char payload[128];
+    snprintf(payload, sizeof(payload), "{\"temperature\":%.2f,\"pressure\":%.2f,\"humidity\":%.2f}",
+             (float)temperature / 100.0, (float)pressure / 100.0, (float)humidity / 1024.0);
+    
+    //set a payload marker         
+    otCoapMessageSetPayloadMarker(message);
+    
+    // Add the payload to the CoAP message
+    otMessageAppend(message, payload, strlen(payload));
+
+    // Set the destination address (replace with actual CoAP server address)
+    memset(&messageInfo, 0, sizeof(messageInfo));
+    otIp6AddressFromString(COAP_SERVER, &messageInfo.mPeerAddr); // Multicast or specific server address
+    messageInfo.mPeerPort = OT_COAP_PORT;
+
+    // Send the CoAP message
+    error = otCoapSendRequest(instance, message, &messageInfo, handle_coap_response, NULL);
+    if (error != OT_ERROR_NONE) {
+        ESP_LOGE(COAP_TAG, "Failed to send CoAP message: %d", error);
+        otMessageFree(message);
+    } else {
+        ESP_LOGI(COAP_TAG, "CoAP message sent successfully");
+    }
+}
+
 static void ot_task_worker(void *aContext)
 {
     ESP_LOGI(TAG, "Starting OpenThread task...");
@@ -180,6 +312,9 @@ static void ot_task_worker(void *aContext)
 #if CONFIG_OPENTHREAD_CLI
     esp_openthread_cli_create_task();
 #endif
+
+
+
 #if CONFIG_ESP_SLEEP_DEBUG
     esp_sleep_set_sleep_context(&s_sleep_ctx);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
@@ -197,6 +332,15 @@ static void ot_task_worker(void *aContext)
     ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, periods * 1000));
 #endif
 
+    //init the I2C master and the BME280
+    ESP_ERROR_CHECK(i2c_master_init());  // Initialize I2C master
+    ESP_LOGI(I2C_TAG, "I2C initialized successfully");
+    i2c_scanner();
+    bme280_init();
+
+    //read bme280 and send coap message
+    send_coap_message();
+    
     // Run the main loop
     esp_openthread_launch_mainloop();
 
