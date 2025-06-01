@@ -59,6 +59,7 @@
 #define TAG "ot_esp_power_save"
 
 static esp_pm_lock_handle_t s_cli_pm_lock = NULL;
+static esp_pm_lock_handle_t s_i2c_pm_lock = NULL;
 
 #if CONFIG_OPENTHREAD_AUTO_START
 static void create_config_network(otInstance *instance)
@@ -109,6 +110,23 @@ static esp_err_t esp_openthread_sleep_device_init(void)
     }
     return ret;
 }
+static esp_err_t esp_i2c_sleep_device_init(void)
+{
+    esp_err_t ret = ESP_OK;
+
+    ret = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "i2c", &s_i2c_pm_lock);
+    if (ret == ESP_OK) {
+        esp_pm_lock_acquire(s_i2c_pm_lock);
+        ESP_LOGI(TAG, "Successfully created CLI pm lock");
+    } else {
+        if (s_i2c_pm_lock != NULL) {
+            esp_pm_lock_delete(s_i2c_pm_lock);
+            s_i2c_pm_lock = NULL;
+        }
+        ESP_LOGI(TAG, " Failed to create CLI pm lock");
+    }
+    return ret;
+}
 
 static void process_state_change(otChangedFlags flags, void* context)
 {
@@ -150,7 +168,6 @@ void i2c_scanner() {
     ESP_LOGI(TAG, "Scanning I2C bus...");
     
     for (uint8_t addr = 1; addr < 127; addr++) {  // I2C address range: 0x01 to 0x7F
-        uint8_t dummy_byte = 0;
         esp_err_t err = i2c_master_probe(i2c_bus_handle, addr, -1);
         if (err == ESP_OK) {
             ESP_LOGI(I2C_TAG, "Found device at address 0x%02X", addr);
@@ -234,7 +251,9 @@ void send_coap_message(void) {
         ESP_LOGE(COAP_TAG, "OpenThread instance is NULL. Cannot send CoAP message.");
         return;
     }
-
+    otCoapStart(instance, OT_DEFAULT_COAP_PORT);
+    ESP_LOGI(COAP_TAG, "CoAP started on port %d", OT_DEFAULT_COAP_PORT);
+    
     // Create a new CoAP message
     message = otCoapNewMessage(instance, NULL);
     if (message == NULL) {
@@ -243,7 +262,7 @@ void send_coap_message(void) {
     }
 
     // Set CoAP message type and code (POST request)
-    otCoapMessageInit(message, OT_COAP_TYPE_CONFIRMABLE, OT_COAP_CODE_PUT);
+    otCoapMessageInit(message, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_PUT);
     otCoapMessageAppendUriPathOptions(message, COAP_URI_PATH);
     
     //set the message type to JSON
@@ -376,10 +395,10 @@ static esp_err_t ot_power_save_init(void)
 void send_data_task(void *pvParameters) {
     while (1) {
         ESP_LOGI(TAG, "Acquiring PM lock, preventing sleep...");
-        if (s_cli_pm_lock) {
-            esp_pm_lock_acquire(s_cli_pm_lock);  // Keep ESP awake
+        if (s_i2c_pm_lock) {
+            esp_pm_lock_acquire(s_i2c_pm_lock);  // Prevent sleep during processing
         }
-        ESP_ERROR_CHECK(i2c_master_bus_reset(i2c_bus_handle));
+        //ESP_ERROR_CHECK(i2c_master_bus_reset(i2c_bus_handle));
         ESP_LOGI(TAG, "ESP woke up, checking I2C bus...");
         if (i2c_bus_handle == NULL) {
             ESP_LOGW(TAG, "I2C bus handle is NULL, reinitializing...");
@@ -388,14 +407,18 @@ void send_data_task(void *pvParameters) {
         }
         ESP_LOGI(TAG, "Sending BME280 data via CoAP...");
         send_coap_message();  // Send sensor data
-
         ESP_LOGI(TAG, "Releasing PM lock, allowing sleep...");
-        if (s_cli_pm_lock) {
-            esp_pm_lock_release(s_cli_pm_lock);  // Allow sleep
+
+        if (s_i2c_pm_lock) {
+            esp_pm_lock_release(s_i2c_pm_lock);  // Allow sleep after processing
         }
 
         ESP_LOGI(TAG, "Task sleeping before next send...");
         vTaskDelay(pdMS_TO_TICKS(30 * 1000));
+        // esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);  // Wake up after 30s
+        // ESP_LOGI(TAG, "Entering light sleep...");
+        // esp_light_sleep_start();
+        // ESP_LOGI(TAG, "Woke up from light sleep!");
     }
 }
 
@@ -421,13 +444,9 @@ void app_main(void)
     i2c_scanner();
     bme280_init();
 
-    
+    xTaskCreate(send_data_task, "send_data_task", 4096, NULL, 10, NULL);
     xTaskCreate(ot_task_worker, "ot_power_save_main", 4096, NULL, 5, NULL);
     
 // Light sleep is handled automatically by IEEE 802.15.4
     ESP_LOGI(TAG, "Waiting for light sleep wake-up...");
-
-    if (xTaskCreate(send_data_task, "send_data_task", 4096, NULL, 10, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create send_data_task! Not enough memory?");
-    }
 }
