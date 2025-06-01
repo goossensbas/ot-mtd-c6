@@ -14,35 +14,36 @@ int32_t t_fine;
 
 // Function to read from BME280
 esp_err_t bme280_read(uint8_t reg_addr, uint8_t *data, size_t len) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_SENSOR_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg_addr, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_SENSOR_ADDR << 1) | I2C_MASTER_READ, true);
-    if (len > 1) {
-        i2c_master_read(cmd, data, len - 1, I2C_MASTER_ACK);
+    esp_err_t err;
+    uint8_t reg = reg_addr;
+
+    // Write the register address first
+    err = i2c_master_transmit(i2c_dev_handle, &reg, 1, I2C_MASTER_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        ESP_LOGE(BME280_TAG, "I2C transmit failed: %d", err);
+        return err;
     }
-    i2c_master_read_byte(cmd, data + len - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+
+    // Read the sensor data
+    err = i2c_master_receive(i2c_dev_handle, data, len, I2C_MASTER_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        ESP_LOGE(BME280_TAG, "I2C receive failed: %d", err);
+    }
+
+    return err;
 }
 
 // Function to write to BME280
 esp_err_t bme280_write(uint8_t reg_addr, uint8_t data) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_SENSOR_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg_addr, true);
-    i2c_master_write_byte(cmd, data, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
+    uint8_t buffer[2] = { reg_addr, data };
 
+    esp_err_t err = i2c_master_transmit(i2c_dev_handle, buffer, sizeof(buffer), I2C_MASTER_TIMEOUT_MS); // Fix argument count
+    if (err != ESP_OK) {
+        ESP_LOGE(BME280_TAG, "I2C write failed: %d", err);
+    }
+
+    return err;
+}
 // BME280 initialization sequence
 void bme280_init() {
     // Write reset value to reset register (0xE0)
@@ -105,7 +106,7 @@ int32_t bme280_compensate_T(int32_t adc_T, int32_t *t_fine_out) {
         *t_fine_out = t_fine; // Assign the calculated t_fine to the location pointed to by t_fine_out
     }
     T = (t_fine * 5 + 128) >> 8;
-    return T;  // Temperature in hundredths of a degree Celsius (e.g., 5123 is 51.23 °C)
+    return T;  // Temperature in hundredths of a degree Celsius (e.g., 5123 is 51.23 ï¿½C)
 }
 
 uint32_t bme280_compensate_P(int32_t adc_P, int32_t t_fine) {

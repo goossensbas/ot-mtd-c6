@@ -3,7 +3,7 @@
 
 #include <stdint.h>   // For fixed-width integer types like uint8_t, int16_t, etc.
 #include "esp_err.h"
-#include "driver/i2c.h" 
+#include "driver/i2c_master.h"
 
 #define BME280_SENSOR_ADDR 0x76       // I2C address for the BME280 sensor
 
@@ -16,6 +16,9 @@
 #define I2C_MASTER_ACK 0
 #define I2C_MASTER_NACK 1
 #define I2C_MASTER_TIMEOUT_MS 1000
+
+extern i2c_master_bus_handle_t i2c_bus_handle;  // Global variable
+extern i2c_master_dev_handle_t i2c_dev_handle;
 
 // BME280 calibration parameters (stored in the sensor)
 extern uint16_t dig_T1;

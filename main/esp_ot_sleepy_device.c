@@ -31,7 +31,7 @@
 #include "openthread/thread.h"
 #include "openthread/coap.h"
 
-#include "driver/i2c.h"
+
 #include "driver/gpio.h"
 #include "bme280.h"
 // I2C configuration  found in bme280.h
@@ -43,12 +43,10 @@
 #define COAP_SERVER "fd3f:4f29:5339:1ff9:ffc:7570:df42:e75f"
 #define OT_COAP_PORT 5683
 
-#if CONFIG_ESP_SLEEP_DEBUG
 #include "esp_timer.h"
 #include "esp_sleep.h"
 #include "esp_private/esp_pmu.h"
 #include "esp_private/esp_sleep_internal.h"
-#endif
 
 #ifdef CONFIG_PM_ENABLE
 #include "esp_pm.h"
@@ -145,39 +143,52 @@ static void print_sleep_flag(void *arg)
 }
 #endif
 
-void i2c_scanner() {
-    uint8_t addr;
-    ESP_LOGI(I2C_TAG, "Scanning I2C bus...");
+i2c_master_bus_handle_t i2c_bus_handle;
+i2c_master_dev_handle_t i2c_dev_handle;
 
-    for (addr = 1; addr < 127; addr++) {
-      uint8_t data; // Dummy data
-        // Check if the device is present
-        esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, addr, &data, 1, 1000 / portTICK_PERIOD_MS);
-        vTaskDelay(10 / portTICK_PERIOD_MS); // Optional delay
+void i2c_scanner() {
+    ESP_LOGI(TAG, "Scanning I2C bus...");
+    
+    for (uint8_t addr = 1; addr < 127; addr++) {  // I2C address range: 0x01 to 0x7F
+        uint8_t dummy_byte = 0;
+        esp_err_t err = i2c_master_probe(i2c_bus_handle, addr, -1);
         if (err == ESP_OK) {
-            ESP_LOGI(I2C_TAG, "Found device at address 0x%02x", addr);
-        }
+            ESP_LOGI(I2C_TAG, "Found device at address 0x%02X", addr);
+        } 
     }
-    ESP_LOGI(I2C_TAG, "Scanning complete.");
+
+    ESP_LOGI(TAG, "I2C scan complete.");
 }
+
 
 
 // Function to initialize the I2C bus
 static esp_err_t i2c_master_init(void) {
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
+    i2c_master_bus_config_t bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_0,
         .sda_io_num = I2C_MASTER_SDA_IO,   // SDA GPIO
         .scl_io_num = I2C_MASTER_SCL_IO,   // SCL GPIO
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ, // I2C clock frequency
+        .flags.enable_internal_pullup = true
     };
-    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
+    esp_err_t err = i2c_new_master_bus(&bus_config, &i2c_bus_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(I2C_TAG, "I2C param config failed");
-        return err;
+        ESP_LOGE(I2C_TAG, "Failed to initialize I2C master: %d", err);
     }
-    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+
+    // **Register BME280 as an I2C device**
+    i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = BME280_SENSOR_ADDR,
+    .scl_speed_hz = 100000,
+};
+
+    err = i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg , &i2c_dev_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add BME280 device: %d", err);
+    }
+
+    return err;  // Ensure the function returns a success/fail result
 }
 
 //CoAP response function
@@ -332,15 +343,6 @@ static void ot_task_worker(void *aContext)
     ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, periods * 1000));
 #endif
 
-    //init the I2C master and the BME280
-    ESP_ERROR_CHECK(i2c_master_init());  // Initialize I2C master
-    ESP_LOGI(I2C_TAG, "I2C initialized successfully");
-    i2c_scanner();
-    bme280_init();
-
-    //read bme280 and send coap message
-    send_coap_message();
-    
     // Run the main loop
     esp_openthread_launch_mainloop();
 
@@ -371,6 +373,32 @@ static esp_err_t ot_power_save_init(void)
     return rc;
 }
 
+void send_data_task(void *pvParameters) {
+    while (1) {
+        ESP_LOGI(TAG, "Acquiring PM lock, preventing sleep...");
+        if (s_cli_pm_lock) {
+            esp_pm_lock_acquire(s_cli_pm_lock);  // Keep ESP awake
+        }
+        ESP_ERROR_CHECK(i2c_master_bus_reset(i2c_bus_handle));
+        ESP_LOGI(TAG, "ESP woke up, checking I2C bus...");
+        if (i2c_bus_handle == NULL) {
+            ESP_LOGW(TAG, "I2C bus handle is NULL, reinitializing...");
+            ESP_ERROR_CHECK(i2c_master_init());
+            bme280_init();
+        }
+        ESP_LOGI(TAG, "Sending BME280 data via CoAP...");
+        send_coap_message();  // Send sensor data
+
+        ESP_LOGI(TAG, "Releasing PM lock, allowing sleep...");
+        if (s_cli_pm_lock) {
+            esp_pm_lock_release(s_cli_pm_lock);  // Allow sleep
+        }
+
+        ESP_LOGI(TAG, "Task sleeping before next send...");
+        vTaskDelay(pdMS_TO_TICKS(30 * 1000));
+    }
+}
+
 void app_main(void)
 {
     // Used eventfds:
@@ -387,5 +415,19 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_vfs_eventfd_register(&eventfd_config));
     ESP_ERROR_CHECK(ot_power_save_init());
     ESP_ERROR_CHECK(esp_openthread_sleep_device_init());
+    //init the I2C master and the BME280
+    ESP_ERROR_CHECK(i2c_master_init());  // Initialize I2C master
+    ESP_LOGI(I2C_TAG, "I2C initialized successfully");
+    i2c_scanner();
+    bme280_init();
+
+    
     xTaskCreate(ot_task_worker, "ot_power_save_main", 4096, NULL, 5, NULL);
+    
+// Light sleep is handled automatically by IEEE 802.15.4
+    ESP_LOGI(TAG, "Waiting for light sleep wake-up...");
+
+    if (xTaskCreate(send_data_task, "send_data_task", 4096, NULL, 10, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create send_data_task! Not enough memory?");
+    }
 }
