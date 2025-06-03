@@ -16,6 +16,7 @@
 #define I2C_MASTER_ACK 0
 #define I2C_MASTER_NACK 1
 #define I2C_MASTER_TIMEOUT_MS 1000
+#define BME280_CTRL_MEAS_REG 0xF4
 
 extern i2c_master_bus_handle_t i2c_bus_handle;  // Global variable
 extern i2c_master_dev_handle_t i2c_dev_handle;

@@ -222,12 +222,15 @@ void send_coap_message(void) {
 
     uint8_t data[8];
     int32_t t_fine;
-    
+
+    //wake up BME280
+    bme280_write(BME280_CTRL_MEAS_REG, 0x27);
+
     // Initialize the sensor and read calibration data
     bme280_read_calibration_data();
 
-    bme280_read(0xF7, data, 8);  // Read pressure (3 bytes), temperature (3 bytes), humidity (2 bytes)
-
+    // Read pressure (3 bytes), temperature (3 bytes), humidity (2 bytes)
+    bme280_read(0xF7, data, 8);  
     int32_t adc_P = (int32_t)((data[0] << 12) | (data[1] << 4) | (data[2] >> 4));
     int32_t adc_T = (int32_t)((data[3] << 12) | (data[4] << 4) | (data[5] >> 4));
     int32_t adc_H = (int32_t)((data[6] << 8) | data[7]);
@@ -235,11 +238,14 @@ void send_coap_message(void) {
     int32_t temperature = bme280_compensate_T(adc_T, &t_fine);
     uint32_t pressure = bme280_compensate_P(adc_P, t_fine);
     uint32_t humidity = bme280_compensate_H(adc_H);
+
+    //put BME280 to sleep
+    bme280_write(BME280_CTRL_MEAS_REG, 0x00);
     
     // Log the results
-    ESP_LOGI(BME280_TAG, "Temperature: %.2f�C", (float)temperature / 100.0);
-    ESP_LOGI(BME280_TAG, "Pressure: %.2f hPa", (float)pressure / 100.0);
-    ESP_LOGI(BME280_TAG, "Humidity: %.2f%%", (float)humidity / 1024.0);
+    // ESP_LOGI(BME280_TAG, "Temperature: %.2f�C", (float)temperature / 100.0);
+    // ESP_LOGI(BME280_TAG, "Pressure: %.2f hPa", (float)pressure / 100.0);
+    // ESP_LOGI(BME280_TAG, "Humidity: %.2f%%", (float)humidity / 1024.0);
 
     otError error;
     otMessage *message;
@@ -414,7 +420,7 @@ void send_data_task(void *pvParameters) {
         }
 
         ESP_LOGI(TAG, "Task sleeping before next send...");
-        vTaskDelay(pdMS_TO_TICKS(30 * 1000));
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
         // esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);  // Wake up after 30s
         // ESP_LOGI(TAG, "Entering light sleep...");
         // esp_light_sleep_start();
@@ -438,6 +444,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_vfs_eventfd_register(&eventfd_config));
     ESP_ERROR_CHECK(ot_power_save_init());
     ESP_ERROR_CHECK(esp_openthread_sleep_device_init());
+    //ESP_ERROR_CHECK(esp_i2c_sleep_device_init());
     //init the I2C master and the BME280
     ESP_ERROR_CHECK(i2c_master_init());  // Initialize I2C master
     ESP_LOGI(I2C_TAG, "I2C initialized successfully");
