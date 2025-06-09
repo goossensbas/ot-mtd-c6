@@ -36,6 +36,8 @@
 #include "bme280.h"
 // I2C configuration  found in bme280.h
 
+#include "fuelgauge.h"
+
 #define I2C_TAG "I2C"
 #define BME280_TAG "BME280"
 #define COAP_TAG "CoAP"
@@ -163,6 +165,7 @@ static void print_sleep_flag(void *arg)
 
 i2c_master_bus_handle_t i2c_bus_handle;
 i2c_master_dev_handle_t i2c_dev_handle;
+i2c_master_dev_handle_t fuel_gauge;
 
 void i2c_scanner() {
     ESP_LOGI(TAG, "Scanning I2C bus...");
@@ -176,8 +179,6 @@ void i2c_scanner() {
 
     ESP_LOGI(TAG, "I2C scan complete.");
 }
-
-
 
 // Function to initialize the I2C bus
 static esp_err_t i2c_master_init(void) {
@@ -198,13 +199,22 @@ static esp_err_t i2c_master_init(void) {
     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
     .device_address = BME280_SENSOR_ADDR,
     .scl_speed_hz = 100000,
-};
+    };
+    // Initialize MAX17048 device handler
+    i2c_device_config_t fuel_gauge_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x36,  // MAX17048 address
+        .scl_speed_hz = 100000,
+    };
 
     err = i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg , &i2c_dev_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add BME280 device: %d", err);
     }
-
+       err = i2c_master_bus_add_device(i2c_bus_handle, &fuel_gauge_cfg , &fuel_gauge);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add MAX17048 device: %d", err);
+    }
     return err;  // Ensure the function returns a success/fail result
 }
 
@@ -323,50 +333,50 @@ static void ot_task_worker(void *aContext)
     }else {
         ESP_LOGI(TAG, "State change callback set successfully.");
     }
-#if CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC
-    // The OpenThread log level directly matches ESP log level
-    (void)otLoggingSetLevel(CONFIG_LOG_DEFAULT_LEVEL);
-#endif
+    #if CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC
+        // The OpenThread log level directly matches ESP log level
+        (void)otLoggingSetLevel(CONFIG_LOG_DEFAULT_LEVEL);
+    #endif
 
-    // Initialize the OpenThread cli
-#if CONFIG_OPENTHREAD_CLI
-    esp_openthread_cli_init();
-#endif
-    esp_netif_t *openthread_netif;
+        // Initialize the OpenThread cli
+    #if CONFIG_OPENTHREAD_CLI
+        esp_openthread_cli_init();
+    #endif
+        esp_netif_t *openthread_netif;
 
-    // Initialize the esp_netif bindings
-    ESP_LOGI(TAG, "Attaching OpenThread to network interface...");
-    openthread_netif = init_openthread_netif(&config);
-    ESP_LOGI(TAG, "OpenThread network interface attached.");
-    ESP_LOGI(TAG, "Setting default network interface...");
-    esp_netif_set_default_netif(openthread_netif);
-    ESP_LOGI(TAG, "Default network interface set.");
-#if CONFIG_OPENTHREAD_AUTO_START
-    create_config_network(esp_openthread_get_instance());
-#endif // CONFIG_OPENTHREAD_AUTO_START
+        // Initialize the esp_netif bindings
+        ESP_LOGI(TAG, "Attaching OpenThread to network interface...");
+        openthread_netif = init_openthread_netif(&config);
+        ESP_LOGI(TAG, "OpenThread network interface attached.");
+        ESP_LOGI(TAG, "Setting default network interface...");
+        esp_netif_set_default_netif(openthread_netif);
+        ESP_LOGI(TAG, "Default network interface set.");
+    #if CONFIG_OPENTHREAD_AUTO_START
+        create_config_network(esp_openthread_get_instance());
+    #endif // CONFIG_OPENTHREAD_AUTO_START
 
-#if CONFIG_OPENTHREAD_CLI
-    esp_openthread_cli_create_task();
-#endif
+    #if CONFIG_OPENTHREAD_CLI
+        esp_openthread_cli_create_task();
+    #endif
 
 
 
-#if CONFIG_ESP_SLEEP_DEBUG
-    esp_sleep_set_sleep_context(&s_sleep_ctx);
-    esp_log_level_set(TAG, ESP_LOG_DEBUG);
+    #if CONFIG_ESP_SLEEP_DEBUG
+        esp_sleep_set_sleep_context(&s_sleep_ctx);
+        esp_log_level_set(TAG, ESP_LOG_DEBUG);
 
-    // create a timer to print the status of sleepy device
-    int periods = 2000;
-    const esp_timer_create_args_t timer_args = {
-            .name = "print_sleep_flag",
-            .arg  = NULL,
-            .callback = &print_sleep_flag,
-            .skip_unhandled_events = true,
-    };
-    esp_timer_handle_t periodic_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &periodic_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, periods * 1000));
-#endif
+        // create a timer to print the status of sleepy device
+        int periods = 2000;
+        const esp_timer_create_args_t timer_args = {
+                .name = "print_sleep_flag",
+                .arg  = NULL,
+                .callback = &print_sleep_flag,
+                .skip_unhandled_events = true,
+        };
+        esp_timer_handle_t periodic_timer;
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &periodic_timer));
+        ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, periods * 1000));
+    #endif
 
     // Run the main loop
     esp_openthread_launch_mainloop();
