@@ -1,8 +1,6 @@
 #include "fuelgauge.h"
 #include <stdio.h>
 
-i2c_master_dev_handle_t fuel_gauge;  // Define global variable
-
 // Function to read a register
 uint16_t max17048_read_register(uint8_t reg) {
     uint8_t data[2];
@@ -19,12 +17,13 @@ void max17048_sleep() {
 }
 
 // Wake and read battery data
-void max17048_wake_and_read() {
-    uint16_t voltage = max17048_read_register(0x02);
-    uint16_t soc = max17048_read_register(0x04);
-    uint16_t rate = max17048_read_register(0x06);
+void max17048_wake_and_read(float *voltage, float *soc, float *rate) {
+    uint16_t raw_voltage = max17048_read_register(0x02);
+    uint16_t raw_soc = max17048_read_register(0x04);
+    int16_t raw_rate = (int16_t)max17048_read_register(0x06);  // Ensure signed interpretation
 
-    printf("Voltage: %.2f V\n", voltage * 0.078125 / 1000);
-    printf("State of Charge: %.2f %%\n", soc * 0.00390625);
-    printf("Discharge Rate: %.2f mV/h\n", (int16_t)rate * 0.078125);
+    // Convert raw values to readable format
+    *voltage = raw_voltage * 0.078125 / 1000;
+    *soc = raw_soc * 0.00390625;
+    *rate = raw_rate * 0.078125;
 }

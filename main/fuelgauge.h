@@ -8,6 +8,6 @@ extern i2c_master_dev_handle_t fuel_gauge;
 // Function prototypes
 uint16_t max17048_read_register(uint8_t reg);
 void max17048_sleep();
-void max17048_wake_and_read();
+void max17048_wake_and_read(float *voltage, float *soc, float *rate);
 
 #endif

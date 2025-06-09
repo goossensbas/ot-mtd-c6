@@ -39,6 +39,7 @@
 #include "fuelgauge.h"
 
 #define I2C_TAG "I2C"
+#define MAX17048_TAG "MAX17048"
 #define BME280_TAG "BME280"
 #define COAP_TAG "CoAP"
 #define COAP_URI_PATH "test"
@@ -211,7 +212,7 @@ static esp_err_t i2c_master_init(void) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add BME280 device: %d", err);
     }
-       err = i2c_master_bus_add_device(i2c_bus_handle, &fuel_gauge_cfg , &fuel_gauge);
+    err = i2c_master_bus_add_device(i2c_bus_handle, &fuel_gauge_cfg , &fuel_gauge);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add MAX17048 device: %d", err);
     }
@@ -251,11 +252,24 @@ void send_coap_message(void) {
 
     //put BME280 to sleep
     bme280_write(BME280_CTRL_MEAS_REG, 0x00);
-    
+  
     // Log the results
     // ESP_LOGI(BME280_TAG, "Temperature: %.2f�C", (float)temperature / 100.0);
     // ESP_LOGI(BME280_TAG, "Pressure: %.2f hPa", (float)pressure / 100.0);
     // ESP_LOGI(BME280_TAG, "Humidity: %.2f%%", (float)humidity / 1024.0);
+
+    //wake and read the data from the fuel gauge
+    float voltage;
+    float soc;
+    float rate;
+    max17048_wake_and_read(&voltage, &soc, &rate);
+
+    ESP_LOGI(MAX17048_TAG, "Voltage: %.2f V", voltage);
+    ESP_LOGI(MAX17048_TAG, "State of Charge: %.2f %%", soc);
+    ESP_LOGI(MAX17048_TAG, "Discharge Rate: %.2f mV/h", rate);
+
+    //put the fuel gauge in sleep mode
+    max17048_sleep();
 
     otError error;
     otMessage *message;
@@ -285,8 +299,14 @@ void send_coap_message(void) {
     otCoapMessageAppendContentFormatOption(message, OT_COAP_OPTION_CONTENT_FORMAT_JSON);
     // Build JSON payload with sensor data
     char payload[128];
-    snprintf(payload, sizeof(payload), "{\"temperature\":%.2f,\"pressure\":%.2f,\"humidity\":%.2f}",
-             (float)temperature / 100.0, (float)pressure / 100.0, (float)humidity / 1024.0);
+    snprintf(payload, sizeof(payload), 
+            "{\"temp\":%.2f,\"press\":%.2f,\"hum\":%.2f,\"volt\":%.2f,\"soc\":%.2f,\"rate\":%.2f}",
+            (float)temperature / 100.0, 
+            (float)pressure / 100.0, 
+            (float)humidity / 1024.0, 
+            voltage, 
+            soc, 
+            rate);
     
     //set a payload marker         
     otCoapMessageSetPayloadMarker(message);
